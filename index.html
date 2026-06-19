@@ -1,0 +1,220 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Mic Frequency Analyzer</title>
+  <style>
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      margin: 0;
+      padding: 22px;
+      background: #07111f;
+      color: #fff;
+    }
+    .card {
+      background: #111c2e;
+      border-radius: 20px;
+      padding: 20px;
+      margin-bottom: 16px;
+      box-shadow: 0 8px 24px rgba(0,0,0,.3);
+    }
+    h1 { font-size: 27px; margin: 0 0 8px; }
+    .sub { color: #cbd5e1; font-size: 15px; line-height: 1.4; }
+    .freq {
+      font-size: 58px;
+      font-weight: 900;
+      color: #38bdf8;
+      margin: 12px 0 0;
+      letter-spacing: -2px;
+    }
+    .label {
+      color: #94a3b8;
+      font-size: 13px;
+      text-transform: uppercase;
+      letter-spacing: .08em;
+      margin-top: 18px;
+    }
+    .value {
+      font-size: 24px;
+      font-weight: 700;
+      margin-top: 4px;
+    }
+    button {
+      width: 100%;
+      padding: 16px;
+      font-size: 18px;
+      border: 0;
+      border-radius: 15px;
+      margin-top: 10px;
+      font-weight: 800;
+    }
+    .start { background: #38bdf8; color: #00111f; }
+    .stop { background: #ef4444; color: #fff; }
+    canvas {
+      width: 100%;
+      height: 130px;
+      background: #020617;
+      border-radius: 14px;
+      margin-top: 14px;
+    }
+    .note {
+      font-size: 13px;
+      line-height: 1.45;
+      color: #cbd5e1;
+    }
+  </style>
+</head>
+<body>
+
+<div class="card">
+  <h1>Mic Frequency Analyzer</h1>
+  <p class="sub">Tap start, allow microphone access, and play sound near the phone. The app estimates the strongest frequency detected by the mic.</p>
+
+  <div class="label">Strongest Frequency</div>
+  <div class="freq"><span id="freq">--</span> Hz</div>
+
+  <div class="label">Estimated Note</div>
+  <div class="value" id="note">--</div>
+
+  <canvas id="spectrum" width="600" height="220"></canvas>
+</div>
+
+<div class="card">
+  <button class="start" id="startBtn">Start Listening</button>
+  <button class="stop" id="stopBtn">Stop</button>
+</div>
+
+<div class="card">
+  <p class="note">
+    Test tip: play a clean tone from another device or speaker first. For binaural beats from headphones, the iPhone mic cannot hear separate left/right channels. It can still identify strong audible frequencies from room sound.
+  </p>
+</div>
+
+<script>
+let audioCtx;
+let analyser;
+let micStream;
+let dataArray;
+let rafId;
+let canvas = document.getElementById("spectrum");
+let c = canvas.getContext("2d");
+
+document.getElementById("startBtn").addEventListener("click", startMic);
+document.getElementById("stopBtn").addEventListener("click", stopMic);
+
+function freqToNote(freq) {
+  if (!freq || freq <= 0) return "--";
+  const noteNames = ["C", "C♯", "D", "D♯", "E", "F", "F♯", "G", "G♯", "A", "A♯", "B"];
+  const midi = Math.round(69 + 12 * Math.log2(freq / 440));
+  const note = noteNames[((midi % 12) + 12) % 12];
+  const octave = Math.floor(midi / 12) - 1;
+  return note + octave;
+}
+
+async function startMic() {
+  try {
+    stopMic();
+
+    if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+      alert("Microphone access is not available. Open this from your GitHub Pages HTTPS link in Safari.");
+      return;
+    }
+
+    micStream = await navigator.mediaDevices.getUserMedia({
+      audio: {
+        echoCancellation: false,
+        noiseSuppression: false,
+        autoGainControl: false
+      }
+    });
+
+    audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+    await audioCtx.resume();
+
+    const source = audioCtx.createMediaStreamSource(micStream);
+
+    analyser = audioCtx.createAnalyser();
+    analyser.fftSize = 8192;
+    analyser.smoothingTimeConstant = 0.72;
+
+    dataArray = new Uint8Array(analyser.frequencyBinCount);
+    source.connect(analyser);
+
+    analyze();
+  } catch (err) {
+    alert("Microphone access failed. On iPhone, use Safari and allow microphone permission. Error: " + err.message);
+  }
+}
+
+function analyze() {
+  if (!analyser || !audioCtx) return;
+
+  analyser.getByteFrequencyData(dataArray);
+
+  const sampleRate = audioCtx.sampleRate;
+  const binCount = analyser.frequencyBinCount;
+  const nyquist = sampleRate / 2;
+
+  let maxVal = 0;
+  let maxIndex = 0;
+
+  const minHz = 40;
+  const maxHz = 5000;
+  const minBin = Math.floor(minHz / nyquist * binCount);
+  const maxBin = Math.floor(maxHz / nyquist * binCount);
+
+  for (let i = minBin; i <= maxBin; i++) {
+    if (dataArray[i] > maxVal) {
+      maxVal = dataArray[i];
+      maxIndex = i;
+    }
+  }
+
+  const freq = maxIndex * nyquist / binCount;
+
+  if (maxVal > 18) {
+    document.getElementById("freq").textContent = freq.toFixed(1);
+    document.getElementById("note").textContent = freqToNote(freq);
+  } else {
+    document.getElementById("freq").textContent = "--";
+    document.getElementById("note").textContent = "--";
+  }
+
+  drawSpectrum();
+  rafId = requestAnimationFrame(analyze);
+}
+
+function drawSpectrum() {
+  c.clearRect(0, 0, canvas.width, canvas.height);
+
+  const bars = 96;
+  const step = Math.floor(dataArray.length / bars);
+  const barWidth = canvas.width / bars;
+
+  for (let i = 0; i < bars; i++) {
+    let v = dataArray[i * step] / 255;
+    let h = v * canvas.height;
+    c.fillStyle = "#38bdf8";
+    c.fillRect(i * barWidth, canvas.height - h, barWidth - 2, h);
+  }
+}
+
+function stopMic() {
+  if (rafId) cancelAnimationFrame(rafId);
+  if (micStream) micStream.getTracks().forEach(t => t.stop());
+  if (audioCtx) audioCtx.close();
+
+  audioCtx = null;
+  analyser = null;
+  micStream = null;
+  dataArray = null;
+  rafId = null;
+
+  document.getElementById("freq").textContent = "--";
+  document.getElementById("note").textContent = "--";
+  c.clearRect(0, 0, canvas.width, canvas.height);
+}
+</script>
+</body>
+</html>
